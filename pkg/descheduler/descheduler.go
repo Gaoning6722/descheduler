@@ -79,6 +79,10 @@ func Run(ctx context.Context, rs *options.DeschedulerServer) error {
 	if err != nil {
 		return err
 	}
+	rs.MetricsClient, err = client.CreateMetricsClient(clientConnection)
+	if err != nil {
+		return err
+	}
 	rs.Client = rsclient
 	rs.EventClient = eventClient
 
@@ -119,7 +123,7 @@ func Run(ctx context.Context, rs *options.DeschedulerServer) error {
 
 	return runFn()
 }
-func cacheMetricsClient() (metricsclientset.Interface, error) {
+func cachedMetricsClient() (metricsclientset.Interface, error) {
 	fakeMetricsClient := fakemetricsclientset.NewSimpleClientset()
 	fakeMetricsClient.PrependReactor("list", "*", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		switch action := action.(type) {
@@ -322,20 +326,20 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 		return fmt.Errorf("build get pods assigned to node function error: %v", err)
 	}
 
-	// real metrics client
-	metricsClient, err := client.CreateMetricsClient(rs.ClientConnection)
-	if err != nil {
-		cancel()
-		klog.V(1).Infof("createMetricsClient failed with %+v", err)
-	}
 	var icache cache.BasicCache
+	var metricsClient metricsclientset.Interface
+	if rs.DryRun {
+		metricsClient = fakemetricsclientset.NewSimpleClientset()
+	} else {
+		metricsClient = rs.MetricsClient
+	}
+
 	// init real metrics cache before start informerFactory
 	icache, err = cache.InitCache(rs.Client, nodeInformer, nodeLister, podInformer, metricsClient, ctx.Done())
 	if err != nil {
 		cancel()
 		klog.V(1).Infof("init metrics cache failed")
 	}
-
 	sharedInformerFactory.Start(ctx.Done())
 	sharedInformerFactory.WaitForCacheSync(ctx.Done())
 
@@ -392,22 +396,6 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 
 			fakeCtx, cncl := context.WithCancel(context.TODO())
 			defer cncl()
-
-			// fake metrics client
-			metricsClient, err := cacheMetricsClient()
-			if err != nil {
-				cancel()
-				klog.V(1).Infof("init metrics cache failed")
-			}
-			//init fake metrics cache
-			icache, err = cache.InitCache(fakeClient, fakeSharedInformerFactory.Core().V1().Nodes().Informer(),
-				fakeSharedInformerFactory.Core().V1().Nodes().Lister(),
-				fakeSharedInformerFactory.Core().V1().Pods().Informer(),
-				metricsClient, fakeCtx.Done())
-			if err != nil {
-				cancel()
-				klog.V(1).Infof("init metrics cache failed")
-			}
 
 			fakeSharedInformerFactory.Start(fakeCtx.Done())
 			fakeSharedInformerFactory.WaitForCacheSync(fakeCtx.Done())
